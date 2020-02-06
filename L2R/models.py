@@ -6,7 +6,7 @@ from utils import *
 RANDOM_PROB = 0.15
 eps = 0.9
 
-def feature_extractor_layers(): # shared layer
+def feature_extractor: # shared layer
     feature_extractor_input = keras.Input(shape=( (2*int((BBOX_LENGTH-1)/2))**2*IMG_CHN, ) )
     x = layers.Flatten()(feature_extractor_input)
     x = layers.Dense(128 ,activation='relu', name = "fc1", kernel_initializer= keras.initializers.glorot_normal())(x)
@@ -96,6 +96,7 @@ class PatchRanker(keras.Model):
             loss = tf.reduce_mean(((gt - pred)*mask)**2)
             self.add_loss(loss)
             self.iteration += 1
+
         '''    
         grads = gtape.gradient(pred, self.trainable_variables)
         
