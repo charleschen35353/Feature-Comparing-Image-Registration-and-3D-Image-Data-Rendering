@@ -9,7 +9,7 @@ def generate_generator_multiple(generator, path, batch_size = 16, img_height = I
                                               batch_size = batch_size,
                                               shuffle=False, 
                                               seed=7)
-
+2
         gen_sns = generator.flow_from_directory(path,
                                               classes = ["sns"],
                                               target_size = (img_height,img_width),

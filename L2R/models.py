@@ -6,15 +6,13 @@ from utils import *
 RANDOM_PROB = 0.15
 eps = 0.9
 
-def feature_extractor: # shared layer
-    feature_extractor_input = keras.Input(shape=( (2*int((BBOX_LENGTH-1)/2))**2*IMG_CHN, ) )
-    x = layers.Flatten()(feature_extractor_input)
-    x = layers.Dense(128 ,activation='relu', name = "fc1", kernel_initializer= keras.initializers.glorot_normal())(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(0.2)(x)
-    x = layers.Dense(64, activation='relu', name= "fc2",kernel_initializer= keras.initializers.glorot_normal())(x)
-    x = layers.BatchNormalization()(x)
-    feature_extractor_output = layers.Dropout(0.2)(x)
+def patch_ranker(): # shared layer
+    x = layers.Flatten()
+    x = layers.Dense(64 ,activation='relu', name = "fc1", kernel_initializer= keras.initializers.glorot_normal())
+    x = layers.BatchNormalization()
+    x = layers.Dense(16, activation='relu', name= "fc2",kernel_initializer= keras.initializers.glorot_normal())
+    x = layers.BatchNormalization()
+
     feature_extractor = keras.models.Model(feature_extractor_input,feature_extractor_output, name='feature_extractor')
     
     return feature_extractor
