@@ -6,14 +6,14 @@
 
 from __future__ import absolute_import, division, print_function, unicode_literals
 import tensorflow as tf
+#tf.enable_eager_execution()
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
 from tensorflow.keras import layers
 from tensorflow import keras
-from keras.applications.vgg19 import VGG19
-from keras.applications.vgg19 import preprocess_input
+from tensorflow.keras.applications import VGG16
 import os
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -50,7 +50,7 @@ def extract_features(ref_image, sns_image):
 
     ref_image = cv2.cvtColor(ref_image, cv2.COLOR_BGR2GRAY) 
     sns_image = cv2.cvtColor(sns_image, cv2.COLOR_BGR2GRAY) 
-    orb_detector = cv2.ORB_create(5000) 
+    orb_detector = cv2.ORB_create(NUM_F_POINTS) 
     kp1, d1 = orb_detector.detectAndCompute(ref_image, None) 
     kp2, d2 = orb_detector.detectAndCompute(sns_image, None) 
     return [kp1,kp2,d1,d2]
@@ -199,8 +199,8 @@ def extract_feature_coor_batch(refs, sns):
     
 def get_model_inputs(refs,sns):
     p_ref, p_sns, matches, kprs, kpss = get_match_info(refs, sns)
-    p_ref = (p_ref.astype(np.float32) / 255.0 ).reshape((p_ref.shape[0]*p_ref.shape[1],                                                        p_ref.shape[2], p_ref.shape[3], p_ref.shape[4]))
-    p_sns = (p_sns.astype(np.float32) / 255.0).reshape((p_sns.shape[0]*p_sns.shape[1],                                                        p_sns.shape[2], p_sns.shape[3], p_sns.shape[4]))
+    p_ref = (p_ref.astype(np.float32) / 255.0 ).reshape((p_ref.shape[0]*p_ref.shape[1], p_ref.shape[2], p_ref.shape[3], p_ref.shape[4]))
+    p_sns = (p_sns.astype(np.float32) / 255.0).reshape((p_sns.shape[0]*p_sns.shape[1], p_sns.shape[2], p_sns.shape[3], p_sns.shape[4]))
     #matches = matches.reshape(matches.shape[0] * matches.shape[1])
     return [p_ref, p_sns, matches, kprs, kpss]
 
@@ -267,19 +267,19 @@ def extract_match_patches(ref_imgs, sns_imgs, kprs, kpss, drs, dss):
             coor = []
             if len(patch) >= NUM_MATCHES: break
             x, y, dis = kprs[i][r.queryIdx].astype(np.uint32)
-            if  x-(BBOX_LENGTH-1) > 0 and y-(BBOX_LENGTH-1) > 0                 and x+(BBOX_LENGTH-1)/2 < IMG_WIDTH and y+(BBOX_LENGTH-1)/2 < IMG_HEIGHT:
+            if  x-(BBOX_LENGTH-1) > 0 and y-(BBOX_LENGTH-1) > 0 and x+(BBOX_LENGTH-1)/2 < IMG_WIDTH and y+(BBOX_LENGTH-1)/2 < IMG_HEIGHT:
                 pair.append(ref_imgs[i][y-int((BBOX_LENGTH-1)/2):y+int((BBOX_LENGTH-1)/2)                                       ,x-int((BBOX_LENGTH-1)/2):x+int((BBOX_LENGTH-1)/2)])
                 coor.append([y,x])
                 
             x, y, dis = kpss[i][r.trainIdx].astype(np.uint32)
-            if  x-(BBOX_LENGTH-1) > 0 and y-(BBOX_LENGTH-1) > 0                 and x+(BBOX_LENGTH-1)/2 < IMG_WIDTH and y+(BBOX_LENGTH-1)/2 < IMG_HEIGHT:
+            if  x-(BBOX_LENGTH-1) > 0 and y-(BBOX_LENGTH-1) > 0 and x+(BBOX_LENGTH-1)/2 < IMG_WIDTH and y+(BBOX_LENGTH-1)/2 < IMG_HEIGHT:
                 pair.append(sns_imgs[i][y-int((BBOX_LENGTH-1)/2):y+int((BBOX_LENGTH-1)/2)                                       ,x-int((BBOX_LENGTH-1)/2):x+int((BBOX_LENGTH-1)/2)])
                 coor.append([y,x])
                 
             if len(pair) == 2:
                 patch.append(np.array(pair))
                 coors.append(np.array(coor))
-                mask[i][y-int((BBOX_LENGTH-1)/2):y+int((BBOX_LENGTH-1)/2)                                       ,x-int((BBOX_LENGTH-1)/2):x+int((BBOX_LENGTH-1)/2)] = 1
+                mask[i][y-int((BBOX_LENGTH-1)/2):y+int((BBOX_LENGTH-1)/2) ,x-int((BBOX_LENGTH-1)/2):x+int((BBOX_LENGTH-1)/2)] = 1
 
         while len(patch) < NUM_MATCHES:
             patch.append(np.zeros((2,BBOX_LENGTH-1,BBOX_LENGTH-1, IMG_CHN)))
@@ -339,9 +339,6 @@ def generate_generator_multiple(generator, path, batch_size = 16, img_height = I
                 patch_input = np.reshape(patch_input,(patch_input.shape[0], BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES))
                 #imgs = np.concatenate((X1i[0], X2i[0]), axis = 3)
                 coors = np.concatenate((cpr,cps), axis = -1)
-                cv2.imwrite("mask.jpg", mask[0]*255)
-                
-                cv2.imwrite("masked_ref.jpg",X1i[0][0]*mask[0])
                 yield [patch_input, coors, mask, X2i[0]/255.0, X1i[0]/255.0], None #Yield both images and their mutual label
 
 class Dataloader:
@@ -380,33 +377,28 @@ print(p2.shape)
 visualize_corresponding_patches(p1,p2)
 
 '''
-# In[116]:
 
 
-DIST_THRES = 100
-RANDOM_PROB = 0.15
-eps = 0.9
 lr = 5e-4
 
-def align_loss(ref_img, homo, mask, sns_img):
-    aligned = tf.nn.convolution(sns_img, homo, padding = 'SAME')
-    masked_aligned = aligned * mask
-    masked_ref = ref_img * mask
-    p_aligned = masked_aligned
-    p_ref = masked_ref
-    #p_aligned = VGG_bc4.predict(preprocess_input(masked_algined))
-    #p_ref = VGG_bc4.predict(preprocess_input(masked_ref))
-    print(p_aligned)
-    loss = keras.losses.MSE(p_aligned, p_ref)
+
+def align_loss(m_ref, m_aligned):
+    loss = (tf.reduce_sum((m_ref - m_aligned)**2))**0.5
     return loss
 
-def registration_loss(mask, sns_img, ref_img):
-    def registration(dummy, homo):
-        return align_loss(ref_img, homo, mask, sns_img,)
+def registration_loss(mask_ref, mask_aligned):
+    def registration(dummy1, dummy2):
+        return align_loss(mask_ref, mask_aligned)
     return registration	
 
-
-# In[123]:
+#custom convolve layer
+class ConvKernel(layers.Layer):
+    def __init__(self):
+        super(ConvKernel, self).__init__()
+ 
+    def call(self, inputs):
+        homo, sns = inputs
+        return tf.nn.convolution(input = sns, filter = homo, padding = "SAME")
 
 
 def FeatureAlignNet(): 
@@ -415,12 +407,12 @@ def FeatureAlignNet():
     patches_plh = layers.Input(shape = ( BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES), dtype = 'float32', name = "input_patches" )
     
     #p = layers.Reshape((BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES))(patches_plh)
-    p = layers.Conv2D(16, 3, strides=(2, 2), name = "pr_conv1",                                padding='valid', activation="relu", kernel_initializer='glorot_uniform')(patches_plh)
-    p = layers.Conv2D(64, 3, strides=(2, 2), name = "pr_conv2",                                padding='valid', activation="relu", kernel_initializer='glorot_uniform')(p)
-    p = layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv3",                                padding='valid', activation="relu", kernel_initializer='glorot_uniform')(p)
+    p = layers.Conv2D(16, 3, strides=(2, 2), name = "pr_conv1", padding='valid', activation="relu", kernel_initializer='glorot_uniform')(patches_plh)
+    p = layers.Conv2D(64, 3, strides=(2, 2), name = "pr_conv2", padding='valid', activation="relu", kernel_initializer='glorot_uniform')(p)
+    p = layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv3", padding='valid', activation="relu", kernel_initializer='glorot_uniform')(p)
     p = layers.MaxPool2D()(p)
     p = layers.Flatten()(p)
-    p = layers.Dense(16*NUM_MATCHES, activation= 'relu', name = "pr_fc1", kernel_initializer = 'glorot_uniform')(p)
+    #p = layers.Dense(16*NUM_MATCHES, activation= 'relu', name = "pr_fc1", kernel_initializer = 'glorot_uniform')(p)
     w = layers.Dense(NUM_MATCHES, activation= 'relu', name = "pr_out", kernel_initializer = 'glorot_uniform')(p)
     
     #homography calc
@@ -430,13 +422,22 @@ def FeatureAlignNet():
     #h = layers.Dense(256, activation= 'relu', name = "homo_fc1", kernel_initializer = 'glorot_uniform')(cw)
     h = layers.Dense(27, activation= 'relu', name = "homo_out", kernel_initializer = 'glorot_uniform')(cw)
     homo = layers.Reshape((3,3,3))(h)
+    sns_plh = layers.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN), dtype = 'float32', name = "input_sns" )
+    aligned = ConvKernel()([homo, sns_plh])
     
-    mask_plh = keras.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN),                               dtype = 'float32', name = "input_mask" )
-    sns_plh = keras.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN),                               dtype = 'float32', name = "input_sns" )
-    ref_plh = keras.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN),                               dtype = 'float32', name = "input_ref" )
-    
-    model = keras.Model(inputs=[patches_plh, coors_plh, mask_plh, sns_plh, ref_plh], outputs=homo)
-    loss_func = registration_loss(mask_plh, sns_plh, ref_plh)
+    mask_plh = layers.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN), dtype = 'float32', name = "input_mask" )
+    ref_plh = layers.Input(shape = (IMG_HEIGHT, IMG_WIDTH, IMG_CHN), dtype = 'float32', name = "input_ref" )
+
+    masked_ref = layers.Multiply()([ref_plh, mask_plh])    
+    masked_aligned =  layers.Multiply()([aligned, mask_plh])  
+
+    VGG = VGG16(weights='imagenet')
+    percep = Model(inputs=VGG.input, outputs=VGG.get_layer('block4_pool').output)    
+    p_ref = percep.predict(masked_ref)
+    p_aligned = percep.predict(masked_aligned)
+
+    model = keras.Model(inputs=[patches_plh, coors_plh, mask_plh, sns_plh, ref_plh], outputs=aligned)
+    loss_func = registration_loss(p_aligned, p_ref)
     model.compile(optimizer = keras.optimizers.Adam(learning_rate=lr),
               loss=loss_func)
     
@@ -444,13 +445,11 @@ def FeatureAlignNet():
     return model
 
 
-# In[124]:
-
 
 batch_size = 6
 trainset_size = 6
 testset_size = 6
-epochs = 1000
+epochs = 20
 
 
 dl = Dataloader(train_path = "./data/train", test_path= "./data/test", batch_size = batch_size)
@@ -458,31 +457,23 @@ train_generator, test_generator = dl.load_dl()
 net = FeatureAlignNet()
 print("Trainables:")
 print(tf.trainable_variables())
+
+checkpoint_path = "checkpoints/cp.ckpt"
+checkpoint_dir = os.path.dirname(checkpoint_path)
+cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,
+                                                 save_weights_only=True,
+                                                 verbose=1)
+tensorboard = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=0,
+                          write_graph=True, write_images=True)
+keras.utils.plot_model(net, 'homography_estimation.png')
+
 net.fit_generator(train_generator,
                                 steps_per_epoch=trainset_size/batch_size,
                                 epochs = epochs,
                                 validation_data = test_generator,
                                 validation_steps = testset_size/batch_size,
-                                use_multiprocessing = True,
-                                shuffle = True)
+                                use_multiprocessing = False,
+                                shuffle = True,
+                                callbacks=[cp_callback, tensorboard])
 
-
-# In[ ]:
-
-
-patches, additionals = dl.load_data(test=True)
-pred = net(patches)
-refs,snss,matches = additionals
-imgs = register_with_predicted(pred, matches, refs, snss)
-for i in range(imgs.shape[0]):
-    cv2.imwrite("registered_cv2{}.jpg".format(i), imgs[i])
-
-
-# In[ ]:
-
-
-
-
-
-
-
+net.save("./models/")
