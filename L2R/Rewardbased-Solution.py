@@ -33,9 +33,9 @@ IMG_HEIGHT = 842
 IMG_CHN = 3
 BBOX_LENGTH = 21 
 
-NUM_F_POINTS = 4000
-NUM_MATCHES = 800
-NUM_CHOSEN_MATCHES = 250
+NUM_F_POINTS = 2000
+NUM_MATCHES = 500
+NUM_CHOSEN_MATCHES = 70
 
 DUMMY_COOR_MIN = 0
 DUMMY_COOR_MAX = 999
@@ -44,7 +44,7 @@ FD_DIM = 32
 RANDOM_PROB = 0.15
 eps = 0.9
 alpha = 5
-beta = 1
+beta = 0
 lr = 1e-4
 
 assert NUM_F_POINTS > NUM_MATCHES
@@ -106,6 +106,11 @@ def register_images(sns_imgs, homographies, img_size = (IMG_WIDTH,IMG_HEIGHT), s
 
 def visualize_matches(ref_imgs, sns_imgs, kp1s, kp2s, matches):
     for i in range(ref_imgs.shape[0]):
+        temp = matches
+        matches = []
+        for j in range(len(temp)):
+            if temp[j] != []:
+                matches.append(list(filter(None, temp[j])))
         imMatches = cv2.drawMatches(ref_imgs[i], kp1s[i], sns_imgs[i], kp2s[i], matches[i], None)
         cv2.imwrite("matches_{}.jpg".format(i), imMatches)
     
@@ -377,6 +382,10 @@ def loss(model, inputs, training):
     
     y_true = []
     _,_, kp1s, kp2s, new_matches  = get_match_info(refs, aligned_imgs)
+    print(kp1s.shape)
+    print(kp2s.shape)
+    print(new_matches.shape)
+    visualize_matches(refs, aligned_imgs, kp1s, kp2s, new_matches)
     coor_dists, feature_dists = [], []
 
     for i in range(kp1s.shape[0]):
