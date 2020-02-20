@@ -33,22 +33,16 @@ IMG_HEIGHT = 842
 IMG_CHN = 3
 BBOX_LENGTH = 21 
 
-NUM_F_POINTS = 4000
-NUM_MATCHES = 800
-NUM_CHOSEN_MATCHES = 250
+NUM_F_POINTS = 2000
+NUM_MATCHES = 500
+NUM_CHOSEN_MATCHES = 50
 
 DUMMY_COOR_MIN = 0
 DUMMY_COOR_MAX = 999
 
-FD_DIM = 32
 RANDOM_PROB = 0.15
 eps = 0.9
-alpha = 5
-beta = 1
-lr = 1e-4
-
-assert NUM_F_POINTS > NUM_MATCHES
-assert NUM_MATCHES > NUM_CHOSEN_MATCHES
+lr = 1e-3
 
 def batch_match(d1s, d2s):
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck = True)
@@ -112,43 +106,38 @@ def visualize_matches(ref_imgs, sns_imgs, kp1s, kp2s, matches):
   
 def extract_features(ref_image, sns_image):
     # Create ORB detector with 5000 features. 
-    
+
     ref_image = cv2.cvtColor(ref_image, cv2.COLOR_BGR2GRAY) 
     sns_image = cv2.cvtColor(sns_image, cv2.COLOR_BGR2GRAY) 
     orb_detector = cv2.ORB_create(NUM_F_POINTS) 
     kp1, d1 = orb_detector.detectAndCompute(ref_image, None) 
     kp2, d2 = orb_detector.detectAndCompute(sns_image, None) 
+
     kp1_np, kp2_np = [], []
+
     for i in range(NUM_F_POINTS):
         if i < len(kp1):
             kp1_np.append(kp1[i])
         else:
             kp1_np.append(None)
-            if d1 is not None:
-                d1 = np.vstack((d1, np.zeros_like(d1[0:1]))) 
-            else:
-                d1 = np.zeros(shape = (1, FD_DIM))
+            d1 = np.vstack((d1, np.zeros_like(d1[0:1]))) 
+            
         if i < len(kp2):
             kp2_np.append(kp2[i])
         else:
             kp2_np.append(None)
-            if d2 is not None:
-                d2 = np.vstack((d2, np.zeros_like(d2[0:1])))
-            else:
-                d2 = np.zeros(shape= (1, FD_DIM))     
-   
+            
+            d2 = np.vstack((d2, np.zeros_like(d1[0:1])))
+        
     kp1_np, kp2_np = np.array(kp1_np) , np.array(kp2_np)
-    
-    return [kp1_np[:NUM_F_POINTS], kp2_np[:NUM_F_POINTS], d1[:NUM_F_POINTS], d2[:NUM_F_POINTS]]
+
+    return [kp1_np, kp2_np, d1, d2]
 
 def extract_feature_batch(refs, sns):
     output = []
     for i in range(refs.shape[0]):
         out = extract_features(refs[i], sns[i])
         for j in range(4):
-            #print(out[j])
-            #print(out[j].shape)
-            #print("============")
             if len(output) < 4:
                 output.append(np.expand_dims(out[j], axis=0))
             else: 
@@ -214,11 +203,10 @@ def extract_match_patches(ref_imgs, sns_imgs, kprs, kpss, drs, dss):
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck = True)
     patches, matches = [], []
     for i in range(ref_imgs.shape[0]): # batch size
-        #print(drs)
-        #print(dss)
         results = matcher.match(drs[i], dss[i])
         patch = []
         match = []
+    
         for r in results:
             pair = []
             if len(patch) >= NUM_MATCHES: break
@@ -347,9 +335,10 @@ model = keras.Sequential([
     layers.Input(shape = ( BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES), dtype = 'float32', name = "input_patches" ),
     
     #p = layers.Reshape((BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES))(patches_plh)
-    layers.Conv2D(16, 3, strides=(1, 1), name = "pr_conv1",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
-    layers.Conv2D(64, 3, strides=(1, 1), name = "pr_conv2",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+    layers.Conv2D(16, 3, strides=(2, 2), name = "pr_conv1",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+    layers.Conv2D(64, 3, strides=(2, 2), name = "pr_conv2",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
     layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv3", padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+    layers.MaxPool2D(),
     layers.Flatten(),
     layers.Dense(NUM_MATCHES, activation= 'sigmoid', name = "pr_out", kernel_initializer = 'glorot_uniform')
 ])
@@ -360,11 +349,11 @@ def loss(model, inputs, training):
 
     patches, matches, kprs, kpss, refs, sns = inputs
     y_pred = model(patches, training=training) # batch * matches indicating quality
-    inds = tf.argsort(tf.argsort(y_pred, direction='DESCENDING'))
-    if tf.random.uniform(shape = (1,)) < RANDOM_PROB:#**(self.iteration / 100):
+    inds = tf.argsort(y_pred, axis = -1 ,direction='DESCENDING')
+    if tf.random.uniform((1,)) < RANDOM_PROB :
+        print("Random action selected.")
         inds = tf.random.shuffle(inds)
-        print("Random!")
-    
+
     #select top 100
     mask = tf.where(inds < NUM_CHOSEN_MATCHES, tf.ones_like(inds), tf.zeros_like(inds)) #(6,500)
     mask = mask.numpy()
@@ -403,29 +392,15 @@ def loss(model, inputs, training):
     feature_dists = np.array(feature_dists)
 
     for c_d, f_d in zip(coor_dists, feature_dists):
-        y_true.append(np.ones_like(y_pred[0]) * 100/(alpha*c_d+beta*f_d+1) )
+        y_true.append(np.ones_like(y_pred[0]) * 1/(c_d+f_d) )
          
-    y_true = np.array(y_true) * mask
+    y_true = np.array(y_true)
     y_true = tf.convert_to_tensor(y_true)
-    y_pred = y_pred * mask
-    print(y_true)
-    #print(y_pred)
-
-    print("=========================")
     return loss_obj(y_true=y_true, y_pred=y_pred)
-
-def grad(model, inputs):
-    with tf.GradientTape() as tape:
-        loss_value = loss(model, inputs, training=True)
-    return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
 
 print("Trainables:")
 print(tf.trainable_variables)
-
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-
-'''
 inputs, _ = dl.load_data()
 
 patch_input, matches, kprs, kpss, refs, sns = inputs
@@ -435,7 +410,12 @@ print(predict)
 l = loss(model, inputs, training=False)
 print("Loss test: {}".format(l))
 
+def grad(model, inputs):
+    with tf.GradientTape() as tape:
+        loss_value = loss(model, inputs, training=True)
+    return loss_value, tape.gradient(loss_value, model.trainable_variables)
 
+optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 loss_value, grads = grad(model, inputs)
 
 print("Step: {}, Initial Loss: {}".format(optimizer.iterations.numpy(),
@@ -445,15 +425,16 @@ optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
 print("Step: {}, Loss: {}".format(optimizer.iterations.numpy(),
                                           loss(model, inputs, training=True).numpy()))
-'''
+
 # Keep results for plotting
 train_loss_results = []
 
-num_epochs = 2000
+num_epochs = 200
 
 train_ds, test_ds = dl.load_dl()
 for epoch in range(num_epochs):
     epoch_loss_avg = tf.keras.metrics.Mean()
+    
 
     x,_ =  dl.load_data()
     
@@ -464,4 +445,4 @@ for epoch in range(num_epochs):
 
     if epoch %10 == 0:
         RANDOM_PROB = RANDOM_PROB* eps
-    print("Epoch {:03d}: Loss: {}".format(epoch, epoch_loss_avg.result()))
+    print("Epoch {:03d}: Loss: {:.3f}".format(epoch, epoch_loss_avg.result()))
