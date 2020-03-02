@@ -1,4 +1,4 @@
-
+	
 from __future__ import absolute_import, division, print_function, unicode_literals
 import tensorflow as tf
 tf.enable_eager_execution()
@@ -44,8 +44,11 @@ COOR_DIST_MAX = 100.0
 IMG_CENTER_W = 298 
 IMG_CENTER_Y = 421
 
-LBL_BUILDING_EP = 20
+LBL_BUILDING_EP = 2
 VALID_DESCRIPTOR_COUNTS = 20
+
+SIZE_OF_TRAIN_DS = 6
+SIZE_OF_VAL_DS = 4
 
 eps = 0.85
 alpha = 0.1
@@ -314,7 +317,7 @@ def scramble(a, axis=-1):
     b = b[..., idx]
     return b.swapaxes(axis, -1)
 
-def calc_label(inputs, mask, inds):
+def calc_label(inputs, mask, inds, print_info = True):
     patches, matches, kprs, kpss, refs, sns = inputs
     selected_matches = np.where(mask > 0.5, matches, np.zeros_like(mask))
     selected_matches = np.reshape(selected_matches[selected_matches != 0], (-1, NUM_CHOSEN_MATCHES))
@@ -358,16 +361,17 @@ def calc_label(inputs, mask, inds):
             num_maxes.append(int(sum([x for x in coor_dists[i] if x == COOR_DIST_MAX])/COOR_DIST_MAX))
             num_vals.append(len(val_dists[-1]))
         
-        print("valid dist \t num \t # of cap dist:")
+        if print_info:
+            print("valid dist \t num \t # of cap dist:")
         val_scores, cap_num_scores = [],[]
         for i in range(len(coor_dists)):
             avg_val = 100
             if num_vals[i] != 0:
                avg_val = sum(val_dists[i])/num_vals[i]
-            print("{:3f}\t {}\t {}".format(avg_val, num_vals[i], num_maxes[i]))
+            if print_info:
+                print("{:3f}\t {}\t {}".format(avg_val, num_vals[i], num_maxes[i]))
             val_scores.append(np.ones_like(inds[0]) * (COOR_DIST_MAX - avg_val)/COOR_DIST_MAX)
             cap_num_scores.append(np.ones_like(inds[0]) * (NUM_MATCHES - num_maxes[i])/NUM_MATCHES )
-        print("==============================")
         
         y_true = alpha*np.array(val_scores) + beta*np.array(cap_num_scores)
         y_true = np.array(y_true) * mask
@@ -407,7 +411,7 @@ def infer_with_pred(y_pred, inputs):
     mask = tf.where(inds < NUM_CHOSEN_MATCHES, tf.ones_like(inds), tf.zeros_like(inds)) #(6,500)
     mask = mask.numpy()
     
-    _, additions  = calc_label(inputs, mask, inds)
+    _, additions  = calc_label(inputs, mask, inds, print_info = False)
 
     return additions
 
@@ -447,121 +451,182 @@ def generate_generator_multiple(generator, path, batch_size = 16, img_height = I
                 yield [patch_input, matches, kprs, kpss, X1i[0].astype(np.uint8), X2i[0].astype(np.uint8)], None #Yield both images and their mutual label
 
 
+
 class Dataloader:
-    def __init__(self, train_path, test_path, batch_size = 16):
+    def __init__(self, train_path, val_path, batch_size = 16, label_dir = ""):
         
         train_imgen = keras.preprocessing.image.ImageDataGenerator()
-        test_imgen = keras.preprocessing.image.ImageDataGenerator()
+        val_imgen = keras.preprocessing.image.ImageDataGenerator()
 
         self.train_generator = generate_generator_multiple(generator=train_imgen,
                                                path = str(train_path),
                                                batch_size=batch_size)       
 
-        self.test_generator = generate_generator_multiple(test_imgen,
-                                              path = str(test_path),
+        self.val_generator = generate_generator_multiple(val_imgen,
+                                              path = str(val_path),
                                               batch_size=batch_size) 
-        self.labels = None
-        #Label building
-        for ep in range(LBL_BUILDING_EP):
-             print("Label forming in progress... {} out of {}".format(ep+1, LBL_BUILDING_EP))
-             labels = None
-             for x, _ in self.train_generator:
-                 y = label_fetching(x)
-                 if labels is None: 
-                     labels = y
-                 else:
-                     labels = np.vstack((labels,y))
-                 print(labels.shape)
-             
-             if self.labels is None:
-                 self.labels = labels
-             else:
-                 self.labels += labels
-        self.labels = self.labels/LBL_BUILDING_EP
-        print(self.labels)
-        '''
-        for ep in range(LBL_BUILDING_EP)
-             x,_ =  next(self.train_generator) 
-             y = label_fetching(x)
-             if labels is None:
-                 labels = y
-             else:
-                 labels += y
-             
-        self.labels = labels/ LBL_BUILDING_EP
-        '''
-    def load_data(self, test = False):
-        if test:
-            x, _ = next(self.test_generator)
-            return x, self.labels
+        self.train_labels = None
+        self.val_labels = None
+        self.train_ind = 0
+        self.val_ind = 0
+
+        if os.path.exists(label_dir):
+            self.train_labels = np.load(label_dir + "/train.npz")['y']
+            self.val_labels = np.load(label_dir + "/val.npz")['y']
+            print("======Pre-calculated labels loaded.======")
+
+        else:
+            #Label building
+            for ep in range(LBL_BUILDING_EP):
+                print("Train Label forming in progress... {} out of {}".format(ep+1, LBL_BUILDING_EP))
+                labels = None
+                for x, _ in self.train_generator:
+                    y = label_fetching(x)
+                    if labels is None: 
+                        labels = y
+                    else:
+                        labels = np.vstack((labels,y))
+                    
+                    if labels.shape[0] >= SIZE_OF_TRAIN_DS: 
+                        break
+   
+       
+                if self.train_labels is None:
+                    self.train_labels = labels
+                else:
+                    self.train_labels += labels
+                
+            self.train_labels = self.train_labels/LBL_BUILDING_EP
+
+            for ep in range(LBL_BUILDING_EP):
+                print("Validation Label forming in progress... {} out of {}".format(ep+1, LBL_BUILDING_EP))
+                labels = None
+                for x, _ in self.val_generator:
+                    y = label_fetching(x)
+                    if labels is None: 
+                        labels = y
+                    else:
+                        labels = np.vstack((labels,y))
+
+                    if labels.shape[0] >= SIZE_OF_TRAIN_DS: 
+                        break
+    
+        
+                if self.val_labels is None:
+                    self.val_labels = labels
+                else:
+                    self.val_labels += labels
+
+            self.val_labels = self.val_labels/LBL_BUILDING_EP
+        
+            pre_lbl_dir = "./pre_lbls"
+            if not os.path.exists(pre_lbl_dir):
+                os.makedirs(pre_lbl_dir)
+
+            np.savez(pre_lbl_dir + "/train.npz", y = self.train_labels)
+            np.savez(pre_lbl_dir + "/val.npz", y = self.val_labels)
+        
+
+    def load_data(self, val = False):
+        if val:
+            x, _ = next(self.val_generator)
+            new_ind = self.val_ind + x[0].shape[0]
+            y = self.val_labels[self.val_ind:new_ind]
+            end_epoch = False
+            if new_ind >= SIZE_OF_VAL_DS:
+               self.val_ind = 0
+               end_epoch = True
+            else:
+               self.val_ind = new_ind
+            return x, y, end_epoch
         else:
             x, _ = next(self.train_generator)
-            return x, self.labels
+            new_ind = self.train_ind + x[0].shape[0]
+            y = self.train_labels[self.train_ind:new_ind]
+            end_epoch = False
+            if new_ind >= SIZE_OF_TRAIN_DS:
+               self.train_ind = 0
+               end_epoch = True
+            else:
+               self.train_ind = new_ind
+            return x, y, end_epoch
 
     def load_dl(self):
-        return [self.train_generator, self.test_generator]
+        return [self.train_generator, self.val_generator]
 
-global_step = tf.train.get_or_create_global_step()
-train_log_dir = 'logs/train'
-train_summary_writer = tf.contrib.summary.create_file_writer(train_log_dir)
-train_summary_writer.as_default()
-
-batch_size = 6
-trainset_size = 6
-testset_size = 6
-epochs = 20
-
-dl = Dataloader(train_path = "./data/test", test_path= "./data/test", batch_size = batch_size)
-
-model = keras.Sequential([
-    #similarity value for each match
-    layers.Input(shape = ( BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES), dtype = 'float32', name = "input_patches" ),
+def patch_matcher():
+    model = keras.Sequential([
+        #similarity value for each match
+        layers.Input(shape = ( BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES), dtype = 'float32', name = "input_patches" ),
     
-    #p = layers.Reshape((BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES))(patches_plh)
-    layers.Conv2D(16, 3, strides=(1, 1), name = "pr_conv1",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
-    layers.MaxPool2D(),
-    layers.Conv2D(64, 3, strides=(1, 1), name = "pr_conv2",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
-    layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv3", padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
-    layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv4", padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
-    layers.MaxPool2D(),
-    layers.Flatten(),
-    layers.Dense(NUM_MATCHES, activation= 'sigmoid', name = "pr_out", kernel_initializer = 'glorot_uniform')
-])
- 
-
-print("Trainables:")
-print(tf.trainable_variables)
-
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+        #p = layers.Reshape((BBOX_LENGTH-1, BBOX_LENGTH-1, IMG_CHN*2*NUM_MATCHES))(patches_plh)
+        layers.Conv2D(16, 3, strides=(1, 1), name = "pr_conv1",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+        layers.MaxPool2D(),
+        layers.Conv2D(64, 3, strides=(1, 1), name = "pr_conv2",  padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+        layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv3", padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+        layers.Conv2D(128, 3, strides=(1, 1), name = "pr_conv4", padding='valid', activation="relu", kernel_initializer='glorot_uniform'),
+        layers.MaxPool2D(),
+        layers.Flatten(),
+        layers.Dense(NUM_MATCHES, activation= 'sigmoid', name = "pr_out", kernel_initializer = 'glorot_uniform')
+    ])
+    optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+    return model, optimizer
 
 
 # Keep results for plotting
-train_loss_results = []
 
+TB_LOG_DIR = "./logs"
+LABEL_DIR = "./pre_lbls"
+
+batch_size = 5
+dl = Dataloader(train_path = "./data/test", val_path= "./data/train", batch_size = batch_size, label_dir = LABEL_DIR)
+model, optimizer = patch_matcher()
+train_loss_results = []
+val_loss_results = []
 num_epochs = 200
+global_step = tf.train.get_or_create_global_step()
 
 for epoch in range(num_epochs):
-
-    global_step.assign_add(1)
-    epoch_loss_avg = tf.keras.metrics.Mean()
+    train_epoch_loss_avg = tf.keras.metrics.Mean()
+    val_epoch_loss_avg = tf.keras.metrics.Mean()
     
-    inputs, labels =  dl.load_data()
-    pred = model(inputs[0])
-    
-    aligned, val_score, cap_num = infer_with_pred(pred,inputs)
-    loss_value, grads = grad(model, inputs, labels)
-
-    with tf.contrib.summary.record_summaries_every_n_global_steps(5):
-        tf.contrib.summary.scalar('loss', loss_value)
-        tf.contrib.summary.scalar('nomalized_valid_feature_distance_score', val_score)
-        tf.contrib.summary.scalar('nomalized_overcapped_feature_number_score', cap_num)
-        tf.contrib.summary.image('aligned_image', aligned)
-
-
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
-    epoch_loss_avg(loss_value)
-    train_loss_results.append(epoch_loss_avg.result())
+    while True:
+        global_step.assign_add(1)
+        inputs, labels, end_epoch = dl.load_data()
+        pred = model(inputs[0])
+        aligned, val_score, cap_num = infer_with_pred(pred,inputs)
+        loss_value, grads = grad(model, inputs, labels)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        train_epoch_loss_avg(loss_value)
         
-    print("Epoch {:03d}: Loss: {}".format(epoch, epoch_loss_avg.result()))
+        with tf.contrib.summary.create_file_writer(TB_LOG_DIR + '/train').as_default(), tf.contrib.summary.always_record_summaries():
+                tf.contrib.summary.scalar("Loss", loss_value ,step = global_step)
+                tf.contrib.summary.scalar("Valid_distance_score", val_score ,step = global_step)
+                tf.contrib.summary.scalar("Capped_number_score", cap_num ,step = global_step)
+                tf.contrib.summary.image("Aligned_images", aligned, step=global_step)
+                tf.contrib.summary.flush()
+
+        if end_epoch:            
+            break
+
+    train_loss_results.append(train_epoch_loss_avg.result())
+
+    while True:
+        inputs, labels, end_epoch = dl.load_data(val= True)
+        pred = model(inputs[0])
+        aligned, val_score, cap_num = infer_with_pred(pred,inputs)
+        loss_value, _ = grad(model, inputs, labels)
+        val_epoch_loss_avg(loss_value)
+
+        if end_epoch: 
+            with tf.contrib.summary.create_file_writer(TB_LOG_DIR + '/val').as_default(), tf.contrib.summary.always_record_summaries():
+                tf.contrib.summary.scalar("Loss", loss_value ,step = global_step)
+                tf.contrib.summary.scalar("Valid_distance_score", val_score ,step = global_step)
+                tf.contrib.summary.scalar("Capped_number_score", cap_num ,step = global_step)
+                tf.contrib.summary.image("Aligned_images", aligned, step=global_step)
+                tf.contrib.summary.flush()
+            break
+    val_loss_results.append(val_epoch_loss_avg.result())
+    
+    print("Epoch {:03d}: Train Loss: {:4f} Validation Loss:{:4f}".format(epoch, train_epoch_loss_avg.result(), val_epoch_loss_avg.result()))
 
